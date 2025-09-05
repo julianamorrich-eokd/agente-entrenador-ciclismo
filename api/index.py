@@ -41,17 +41,21 @@ def root():
 async def strava_login():
     if not BASE_URL:
         raise HTTPException(status_code=500, detail="BASE_URL not configured")
+
     state = S.dumps({"ts": int(time.time())})
-    scope = "read,activity:read_all"
-auth_url = (
-    f"{AUTHORIZE_URL}"
-    f"?client_id={STRAVA_CLIENT_ID}"
-    f"&redirect_uri={BASE_URL}/auth/strava/callback"
-    f"&response_type=code"
-    f"&scope={scope}"
-    f"&state={state}"
-)
-return RedirectResponse(url=auth_url)
+
+    # Strava quiere el scope separado por COMAS, y la redirect_uri debe estar URL-encoded
+    params = {
+        "client_id": STRAVA_CLIENT_ID,
+        "redirect_uri": f"{BASE_URL}/auth/strava/callback",
+        "response_type": "code",
+        "scope": ",".join(SCOPES),  # <= importante
+        "state": state,
+        "approval_prompt": "auto",
+    }
+
+    qp = httpx.QueryParams(params)  # construye la query string correctamente
+    return RedirectResponse(url=f"{AUTHORIZE_URL}?{qp}")
 
 
 @app.get("/auth/strava/callback")
