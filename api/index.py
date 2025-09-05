@@ -7,18 +7,18 @@ from fastapi.responses import RedirectResponse, JSONResponse
 from dotenv import load_dotenv
 from itsdangerous import URLSafeSerializer
 
-# Vercel loads env vars from dashboard; .env is only for local dev
+# Vercel lee env vars del dashboard
 load_dotenv()
 
 STRAVA_CLIENT_ID = os.getenv("STRAVA_CLIENT_ID")
 STRAVA_CLIENT_SECRET = os.getenv("STRAVA_CLIENT_SECRET")
-BASE_URL = os.getenv("BASE_URL")  # e.g. https://<tu-proyecto>.vercel.app
+BASE_URL = os.getenv("BASE_URL")  # p.ej. https://agente-entrenador-ciclismo.vercel.app
 STATE_SECRET = os.getenv("STATE_SECRET", "change-me")
 AGENT_BEARER_TOKEN = os.getenv("AGENT_BEARER_TOKEN")
 
 # Upstash Redis (persistencia)
-UPSTASH_URL = os.getenv("UPSTASH_REDIS_REST_URL")
-UPSTASH_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
+UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
+UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
 TOKENS_TTL = 30 * 24 * 3600  # 30 días
 
 app = FastAPI(title="Agente Ciclismo Backend (Vercel)")
@@ -30,24 +30,24 @@ TOKEN_URL = "https://www.strava.com/oauth/token"
 API_BASE = "https://www.strava.com/api/v3"
 
 async def redis_get(key: str):
-    if not (UPSTASH_URL and UPSTASH_TOKEN):
+    if not (UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN):
         return None
     async with httpx.AsyncClient(timeout=10) as c:
         r = await c.get(
-            f"{UPSTASH_URL}/get/{key}",
-            headers={"Authorization": f"Bearer {UPSTASH_TOKEN}"},
+            f"{UPSTASH_REDIS_REST_URL}/get/{key}",
+            headers={"Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}"},
         )
     res = r.json().get("result")
     return json.loads(res) if res else None
 
 async def redis_set(key: str, value: dict, ex=TOKENS_TTL):
-    if not (UPSTASH_URL and UPSTASH_TOKEN):
+    if not (UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN):
         return
     payload = json.dumps(value)
     async with httpx.AsyncClient(timeout=10) as c:
         await c.post(
-            f"{UPSTASH_URL}/pipeline",
-            headers={"Authorization": f"Bearer {UPSTASH_TOKEN}"},
+            f"{UPSTASH_REDIS_REST_URL}/pipeline",
+            headers={"Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}"},
             json={"pipeline": [["SET", key, payload], ["EXPIRE", key, ex]]},
         )
 
@@ -64,7 +64,7 @@ async def strava_login():
     if not BASE_URL:
         raise HTTPException(status_code=500, detail="BASE_URL not configured")
     state = S.dumps({"ts": int(time.time())})
-    # Strava quiere scope separado por comas (no espacios)
+    # Strava quiere scope separado por comas
     params = {
         "client_id": STRAVA_CLIENT_ID,
         "redirect_uri": f"{BASE_URL}/auth/strava/callback",
