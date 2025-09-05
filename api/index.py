@@ -1,60 +1,89 @@
 import os
-import time
 import json
+import time
 import httpx
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import RedirectResponse, JSONResponse
 from dotenv import load_dotenv
 from itsdangerous import URLSafeSerializer
 
-# Vercel lee env vars del dashboard
+# .env solo para local; en Vercel usa Variables de Entorno
 load_dotenv()
 
+# === ENV obligatorias ===
 STRAVA_CLIENT_ID = os.getenv("STRAVA_CLIENT_ID")
 STRAVA_CLIENT_SECRET = os.getenv("STRAVA_CLIENT_SECRET")
 BASE_URL = os.getenv("BASE_URL")  # p.ej. https://agente-entrenador-ciclismo.vercel.app
 STATE_SECRET = os.getenv("STATE_SECRET", "change-me")
 AGENT_BEARER_TOKEN = os.getenv("AGENT_BEARER_TOKEN")
 
-# Upstash Redis (persistencia)
+# === Upstash Redis (REST) ===
 UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
 UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
-TOKENS_TTL = 30 * 24 * 3600  # 30 días
 
-app = FastAPI(title="Agente Ciclismo Backend (Vercel)")
+if not (UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN):
+    raise RuntimeError("Faltan UPSTASH_REDIS_REST_URL o UPSTASH_REDIS_REST_TOKEN")
+
 S = URLSafeSerializer(STATE_SECRET)
+app = FastAPI(title="Agente Ciclismo Backend (Vercel + Upstash)")
 
+# --- Strava ---
 SCOPES = ["read", "activity:read_all"]
 AUTHORIZE_URL = "https://www.strava.com/oauth/authorize"
 TOKEN_URL = "https://www.strava.com/oauth/token"
 API_BASE = "https://www.strava.com/api/v3"
 
-async def redis_get(key: str):
-    if not (UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN):
-        return None
-    async with httpx.AsyncClient(timeout=10) as c:
-        r = await c.get(
-            f"{UPSTASH_REDIS_REST_URL}/get/{key}",
-            headers={"Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}"},
-        )
-    res = r.json().get("result")
-    return json.loads(res) if res else None
+# =========================
+#   Helpers Upstash (REST)
+# =========================
+def _redis_headers():
+    return {"Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}"}
 
-async def redis_set(key: str, value: dict, ex=TOKENS_TTL):
-    if not (UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN):
-        return
-    payload = json.dumps(value)
-    async with httpx.AsyncClient(timeout=10) as c:
-        await c.post(
+async def redis_pipeline(commands):
+    """
+    Ejecuta un pipeline en Upstash.
+    commands: lista de listas, ej: [["GET","key"],["SET","key","value"]]
+    """
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.post(
             f"{UPSTASH_REDIS_REST_URL}/pipeline",
-            headers={"Authorization": f"Bearer {UPSTASH_REDIS_REST_TOKEN}"},
-            json={"pipeline": [["SET", key, payload], ["EXPIRE", key, ex]]},
+            headers=_redis_headers(),
+            json=commands,
         )
+        r.raise_for_status()
+        return r.json()  # lista con objetos {"result": ...}
 
+def token_key(athlete_id: str) -> str:
+    return f"strava:token:{athlete_id}"
+
+async def save_token(athlete_id: str, token: dict, ttl_days: int = 30):
+    val = json.dumps(token)
+    ttl_seconds = ttl_days * 24 * 60 * 60
+    await redis_pipeline([
+        ["SET", token_key(athlete_id), val],
+        ["EXPIRE", token_key(athlete_id), str(ttl_seconds)],
+    ])
+
+async def load_token(athlete_id: str) -> dict | None:
+    res = await redis_pipeline([["GET", token_key(athlete_id)]])
+    raw = res[0].get("result")
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+# =========================
+#   Seguridad simple
+# =========================
 def _bearer_ok(req: Request) -> bool:
     auth = req.headers.get("authorization") or req.headers.get("Authorization")
     return bool(auth and auth.split()[:1] == ["Bearer"] and auth.split()[1] == AGENT_BEARER_TOKEN)
 
+# =========================
+#          Rutas
+# =========================
 @app.get("/")
 def root():
     return {"status": "ok", "service": "agente-ciclismo-backend"}
@@ -63,21 +92,23 @@ def root():
 async def strava_login():
     if not BASE_URL:
         raise HTTPException(status_code=500, detail="BASE_URL not configured")
+
     state = S.dumps({"ts": int(time.time())})
-    # Strava quiere scope separado por comas
     params = {
         "client_id": STRAVA_CLIENT_ID,
         "redirect_uri": f"{BASE_URL}/auth/strava/callback",
         "response_type": "code",
+        "approval_prompt": "auto",
+        # Strava quiere scopes separadas por coma (,) y URL-encoded
         "scope": ",".join(SCOPES),
         "state": state,
-        "approval_prompt": "auto",
     }
     qp = httpx.QueryParams(params)
     return RedirectResponse(url=f"{AUTHORIZE_URL}?{qp}")
 
 @app.get("/auth/strava/callback")
 async def strava_callback(code: str, state: str):
+    # Validación CSRF
     try:
         S.loads(state)
     except Exception:
@@ -98,22 +129,22 @@ async def strava_callback(code: str, state: str):
     if not athlete_id:
         raise HTTPException(status_code=400, detail="No athlete id in token response")
 
-    t = {
+    # Guardar en Redis (access/refresh/expiración)
+    await save_token(str(athlete_id), {
         "access_token": token["access_token"],
         "refresh_token": token["refresh_token"],
         "expires_at": token["expires_at"],
-    }
-    await redis_set(f"strava:{athlete_id}", t)
+    })
 
     return JSONResponse({"message": "Strava conectado", "athlete_id": athlete_id})
 
+# ---- refresco y acceso ---
 async def _ensure_token(athlete_id: str) -> str:
-    key = f"strava:{athlete_id}"
-    t = await redis_get(key)
+    t = await load_token(athlete_id)
     if not t:
         raise HTTPException(status_code=401, detail="Conecta Strava primero")
 
-    # refrescar si caduca pronto
+    # ¿caduca en <= 30s? refrescamos
     if t["expires_at"] <= int(time.time()) + 30:
         async with httpx.AsyncClient(timeout=20) as client:
             data = {
@@ -125,15 +156,17 @@ async def _ensure_token(athlete_id: str) -> str:
             r = await client.post(TOKEN_URL, data=data)
             r.raise_for_status()
             newt = r.json()
+
         t.update({
             "access_token": newt["access_token"],
             "refresh_token": newt.get("refresh_token", t["refresh_token"]),
             "expires_at": newt["expires_at"],
         })
-        await redis_set(key, t)
+        await save_token(athlete_id, t)
 
     return t["access_token"]
 
+# ---- endpoints para el Agente (requieren Bearer del agente) ---
 @app.get("/agent/strava/athlete")
 async def get_athlete(request: Request, athlete_id: str):
     if not _bearer_ok(request):
