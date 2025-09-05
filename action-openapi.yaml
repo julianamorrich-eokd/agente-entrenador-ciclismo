@@ -1,0 +1,47 @@
+openapi: 3.1.0
+info:
+  title: Agente Ciclismo – Strava Action
+  version: 1.0.0
+servers:
+  - url: https://TU_DOMINIO.vercel.app/api
+security:
+  - bearerAuth: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+paths:
+  /agent/strava/athlete:
+    get:
+      operationId: getAthlete
+      summary: Devuelve el perfil del atleta autenticado en Strava
+      parameters:
+        - in: query
+          name: athlete_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+  /agent/strava/latest-activities:
+    get:
+      operationId: getLatestActivities
+      summary: Lista actividades recientes del atleta
+      parameters:
+        - in: query
+          name: athlete_id
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: per_page
+          required: false
+          schema:
+            type: integer
+            default: 30
+      responses:
+        '200':
+          description: OK

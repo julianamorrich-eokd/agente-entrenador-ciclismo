@@ -1,0 +1,14 @@
+# Copy this file to .env and fill the values
+
+# From https://www.strava.com/settings/api after creating your app
+STRAVA_CLIENT_ID=
+STRAVA_CLIENT_SECRET=
+
+# For Vercel, include /api (because our routes live under /api)
+BASE_URL=
+
+# Random long string for signing OAuth state
+STATE_SECRET=
+
+# Secret token the ChatGPT Action will send as Bearer Authorization
+AGENT_BEARER_TOKEN=
