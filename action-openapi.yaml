@@ -3,7 +3,7 @@ info:
   title: Agente Ciclismo – Strava Action
   version: 1.0.0
 servers:
-  - url: https://TU_DOMINIO.vercel.app/api
+  - url: https://agente-entrenador-ciclismo.vercel.app
 security:
   - bearerAuth: []
 components:
