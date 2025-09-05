@@ -47,7 +47,7 @@ async def strava_login():
         "redirect_uri": f"{BASE_URL}/auth/strava/callback",
         "response_type": "code",
         "approval_prompt": "auto",
-        "scope": " ".join(SCOPES),
+        "scope": ",".join(SCOPES),
         "state": state,
     }
     # Build query string safely
